@@ -247,8 +247,10 @@ class saltproc:
                 elif read_name:
                     # skip the spaces and first apostrophe
                     self.isoname.append(line.split()[0][1:])
+            # gets rid of last, and total values
             self.isozai = self.isozai[:-2]
             self.isoname = self.isoname[:-2]
+
 
     def init_db(self):
         """ Initializes the database from the output of the first
@@ -261,14 +263,14 @@ class saltproc:
         self.write_init_mat_def()
 
         self.number_of_isotopes = len(self.isoname)
-        shape = (2, self.steps)
-        maxshape = (2, None)
+        shape = (self.steps, 2)
+        maxshape = (None, 2)
         self.keff_eoc_db = self.f.create_dataset('keff_EOC', shape,
                                                  maxshape=maxshape, chunks=True)
         self.keff_boc_db = self.f.create_dataset('keff_BOC', shape,
                                                  maxshape=maxshape, chunks=True)
 
-        shape = (self.steps + 1, self.number_of_isotopes)
+        shape = (self.steps, self.number_of_isotopes)
         maxshape = (None, self.number_of_isotopes)
         self.driver_before_db = self.f.create_dataset('driver composition before reproc',
                                                       shape, maxshape=maxshape,
@@ -307,8 +309,6 @@ class saltproc:
         self.dep_dict = self.read_dep()
         self.driver_before_db[0,
                               :] = self.dep_dict[self.driver_mat_name] * self.driver_vol
-        self.driver_after_db[0,
-                             :] = self.dep_dict[self.driver_mat_name] * self.driver_vol
         try:
             self.blanket_before_db[0,
                                    :] = self.dep_dict[self.blanket_mat_name] * self.blanket_vol
@@ -408,37 +408,34 @@ class saltproc:
         self.isozai_db = self.f['iso zai']
 
         if restart:
-            self.resize_dataset()
+            self.restart_sequence()
 
-    def resize_dataset(self):
-        """ Resizes dataset upon restart"""
-        self.isoname = [str(x) for x in self.isolib_db]
+    def restart_sequence(self):
+        #!!! Check this
+        # print(list(self.isolib_db))
+        self.isoname = [str(x).decode() for x in self.isolib_db]
+
+        # check this too
+        # print(list(self.isozai_db))
         self.isozai = self.isozai_db
 
         self.get_mat_def()
         self.number_of_isotopes = len(self.isoname)
 
-        self.keff = self.keff_eoc_db[0, :]
-        self.current_step = np.amax(np.nonzero(self.keff)) + 1
-        self.keff_eoc_db.resize((2, self.steps + self.current_step))
-        self.keff_boc_db.resize((2, self.steps + self.current_step))
-        shape = (self.steps + self.current_step + 1,
-                 self.number_of_isotopes)
-        self.driver_before_db.resize(shape)
-        self.driver_after_db.resize(shape)
-        self.driver_refill_tank_db.resize(shape)
+        # get index of first zero in keff
 
-        self.blanket_before_db.resize(shape)
-        self.blanket_after_db.resize(shape)
-        self.blanket_refill_tank_db.resize(shape)
-
-        self.waste_tank_db.resize(shape)
-        self.fissile_tank_db.resize(shape)
+        self.current_step = self.find_prev_run_timestep()
 
         self.core = {}
         self.core[self.driver_mat_name] = self.driver_after_db[self.current_step -2]
         self.core[self.blanket_mat_name] = self.blanket_after_db[self.current_step -2]
         self.write_mat_file()
+
+    def find_prev_run_timestep(self):
+        keff_list = np.array(self.keff_eoc_db)[:,0]
+        # find the first zero occurance
+        prev_run_timestep = [val==0 for val in keff_list].index(1)
+        return prev_run_timestep
 
     def read_res(self, moment):
         """ Reads SERPENT output .res file
@@ -483,41 +480,37 @@ class saltproc:
         --------
         dep_dict: dictionary
             key: material name
-            value: dictionary
-                key: isotope
-                value: adens
+            value: np array of mdens
         """
         dep_file = os.path.join('%s_dep.m' % self.input_file)
         with open(dep_file, 'r') as f:
             lines = f.readlines()
-            self.dep_dict = OrderedDict({})
+            dep_dict = OrderedDict({})
             read = False
             for line in lines:
                 if 'MAT'in line and 'MDENS' in line:
                     key = line.split('_')[1]
                     read = True
-                    self.dep_dict[key] = [0] * len(self.isoname)
+                    dep_dict[key] = np.zeros(self.isoname)
                 elif read and ';' in line:
                     read = False
                 elif read:
                     z = line.split(' ')
                     # last burnup stage
-                    indx = z.index('%')
-                    mdens = z[indx-1]
                     if boc:
                         mdens = z[0]
+                    else:
+                        mdens = z[1]
                     # the isotope name is at the end of the line.
                     name = z[-1].replace('\n', '')
                     # find index so that it doesn't change
                     try:
                         where_in_isoname = self.isoname.index(name)
-                        self.dep_dict[key][where_in_isoname] = float(mdens)
+                        dep_dict[key][where_in_isoname] = float(mdens)
                     except ValueError:
                         if name not in ['total', 'data']:
                             print('This isotope is not a valid isotope %s' % name)
-        for key, val in self.dep_dict.items():
-            self.dep_dict[key] = np.array(val)
-        return self.dep_dict
+        return dep_dict
 
     def write_mat_file(self):
         """ Writes the input fuel composition input file block
@@ -732,8 +725,8 @@ class saltproc:
         """ Records the processed fuel composition, Keff values,
             waste tank composition to database
         """
-        self.keff_eoc_db[:, self.current_step - 1] = self.read_res(1)
-        self.keff_boc_db[:, self.current_step - 1] = self.read_res(0)
+        self.keff_eoc_db[self.current_step - 1, :] = self.read_res(1)
+        self.keff_boc_db[self.current_step - 1, :] = self.read_res(0)
 
         self.driver_after_db[self.current_step,
                              :] = self.core[self.driver_mat_name]
@@ -837,7 +830,7 @@ class saltproc:
         """ checks restart and preexisting file
             copies initial mat file to predefined mat file name
         """
-        if self.restart and os.path.isfile(self.mat_file):
+        if self.restart:
             try:
                 self.f = h5py.File(self.db_file, 'r+')
             except:
