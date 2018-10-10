@@ -171,9 +171,7 @@ class saltproc:
             lines = f.readlines()
             for line in lines:
                 iso = line.split()[1]
-                self.lib_isos.append(iso)
-
-        self.lib_isos = np.array(self.lib_isos)
+                self.lib_isos.append(iso.split('.')[0] + '0')
 
     def get_acelib_path(self):
         """ Finds and returns the user-defined acelib
@@ -221,7 +219,7 @@ class saltproc:
                     key = z[1]
                     line = line.split('%')[0]
                     mat_def_dict[key] = line
-        return self.mat_def_dict
+        return mat_def_dict
 
     def get_isos(self):
         """ Reads the isotope zai and name from dep file"""
@@ -411,15 +409,10 @@ class saltproc:
             self.restart_sequence()
 
     def restart_sequence(self):
-        #!!! Check this
-        # print(list(self.isolib_db))
-        self.isoname = [str(x).decode() for x in self.isolib_db]
+        self.isoname = list(self.isolib_db)
+        self.isozai = list(self.isozai_db)
 
-        # check this too
-        # print(list(self.isozai_db))
-        self.isozai = self.isozai_db
-
-        self.get_mat_def()
+        self.mat_def_dict = self.get_mat_def()
         self.number_of_isotopes = len(self.isoname)
 
         # get index of first zero in keff
@@ -427,9 +420,10 @@ class saltproc:
         self.current_step = self.find_prev_run_timestep()
 
         self.core = {}
-        self.core[self.driver_mat_name] = self.driver_after_db[self.current_step -2]
-        self.core[self.blanket_mat_name] = self.blanket_after_db[self.current_step -2]
-        self.write_mat_file()
+        self.core[self.driver_mat_name] = self.driver_after_db[self.current_step-1]
+        self.core[self.blanket_mat_name] = self.blanket_after_db[self.current_step-1]
+	self.write_mat_file()
+
 
     def find_prev_run_timestep(self):
         keff_list = np.array(self.keff_eoc_db)[:,0]
@@ -491,7 +485,7 @@ class saltproc:
                 if 'MAT'in line and 'MDENS' in line:
                     key = line.split('_')[1]
                     read = True
-                    dep_dict[key] = np.zeros(self.isoname)
+                    dep_dict[key] = np.zeros(len(self.isoname))
                 elif read and ';' in line:
                     read = False
                 elif read:
@@ -522,24 +516,40 @@ class saltproc:
         --------
         null. creates SEPRENT input mat block text file
         """
-        ana_keff_boc = self.read_res(0)
-        ana_keff_eoc = self.read_res(1)
         matf = open(self.mat_file, 'w')
-        matf.write('%% Step number # %i %f +- %f;%f +- %f \n' %
-                   (self.current_step, ana_keff_boc[0], ana_keff_boc[1],
-                    ana_keff_eoc[0], ana_keff_eoc[1]))
+
+        try:
+            # this may not work if the previous simulation ended mid-serpent run
+  	    keff_string = self.keff_string_gen()
+       	    matf.write('%% ' + keff_string)
+            rerun_serpent = False
+        except TypeError:
+            rerun_serpent = True
+
         for key, val in self.core.items():
             if key == '':
                 continue
             matf.write(self.mat_def_dict[key].replace('\n', '') + ' fix 09c 900\n')
             for indx, isotope in enumerate(self.isozai):
                 if self.check_isozai_metastable(isotope) or not self.check_isotope_in_library(isotope):
+                    # skip metastables or isotopes that are not in the xsec library
+                    # probably not important
                     continue
                 isotope = self.add_isozai_temp(isotope, '.09c')
-                # filter isotopes not in cross section library
                 mass_frac = -1.0 * (val[indx] / sum(val)) * 100
                 matf.write('%s\t\t%s\n' % (str(isotope), str(mass_frac)))
         matf.close()
+
+        if rerun_serpent:
+            self.run_serpent()
+
+    def keff_string_gen(self):
+        ana_keff_boc = self.read_res(0)
+        ana_keff_eoc = self.read_res(1)
+        string = 'Step number # %i %f +- %f; %f +- %f \n' %(
+                  self.current_step, ana_keff_boc[0], ana_keff_boc[1],
+                  ana_keff_eoc[0], ana_keff_eoc[1])
+        return string
 
     def check_isozai_metastable(self, isotope):
         """ check if an isotope is metastable by checking its
@@ -581,7 +591,7 @@ class saltproc:
             True if  in library
             False if not in library
         """
-        if isotope not in self.lib_isos:
+        if str(isotope) not in self.lib_isos:
             return False
         else:
             return True
@@ -605,6 +615,7 @@ class saltproc:
                                :] = self.core[self.blanket_mat_name]
 
         # waste / fissile tank db initialization
+        # it's okay if current step is zero because [-1] is an array of zeros too
         self.waste_tank_db[self.current_step,
                            :] = self.waste_tank_db[self.current_step-1, :]
         self.fissile_tank_db[self.current_step,
@@ -675,6 +686,7 @@ class saltproc:
             material
         """
         # refill tank db initialization
+        # it's okay if current step is zero because [-1] is an array of zeros too
         self.driver_refill_tank_db[self.current_step,
                                    :] = self.driver_refill_tank_db[self.current_step-1, :]
         self.blanket_refill_tank_db[self.current_step,
@@ -725,8 +737,8 @@ class saltproc:
         """ Records the processed fuel composition, Keff values,
             waste tank composition to database
         """
-        self.keff_eoc_db[self.current_step - 1, :] = self.read_res(1)
-        self.keff_boc_db[self.current_step - 1, :] = self.read_res(0)
+        self.keff_eoc_db[self.current_step, :] = self.read_res(1)
+        self.keff_boc_db[self.current_step, :] = self.read_res(0)
 
         self.driver_after_db[self.current_step,
                              :] = self.core[self.driver_mat_name]
@@ -852,24 +864,31 @@ class saltproc:
     def main(self):
         """ Core of saltproc: moves forward in timesteps,
             run serpent, process fuel, record to db, and repeats
+
+            A Saltproc timestep is as follows:
+            1. deplete fuel from previous step (processed fuel)
+            2. Separates fuel (waste tank)
+            3. Fills core up (fill tank)
+            4. Writes new material file (of processed fuel)
+            5a. Records keff values from step1
+            5b. Records processed fuel composition to db
+            6. Adds timestep
         """
         self.start_sequence()
 
         while self.current_step < self.steps:
             print('Cycle number of %i of %i steps' %
-                  (self.current_step + 1, self.steps))
+                  (self.current_step, self.steps))
             self.run_serpent()
             if self.current_step == 0:
                 # intializing db to get all arrays for calculation
                 self.init_db()
             else:
                 self.reopen_db(False)
-            self.current_step += 1
             self.separate_fuel()
             self.refuel()
             self.write_mat_file()
-            u235_id = self.find_iso_indx('U235')
-            print(self.driver_before_db[self.current_step, u235_id])
             self.record_db()
+            self.current_step += 1
 
         print('End of Saltproc.')
