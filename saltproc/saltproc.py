@@ -422,7 +422,7 @@ class saltproc:
         self.core = {}
         self.core[self.driver_mat_name] = self.driver_after_db[self.current_step-1]
         self.core[self.blanket_mat_name] = self.blanket_after_db[self.current_step-1]
-	self.write_mat_file()
+        self.write_mat_file()
 
 
     def find_prev_run_timestep(self):
@@ -520,8 +520,8 @@ class saltproc:
 
         try:
             # this may not work if the previous simulation ended mid-serpent run
-  	    keff_string = self.keff_string_gen()
-       	    matf.write('%% ' + keff_string)
+            keff_string = self.keff_string_gen()
+            matf.write('%% ' + keff_string)
             rerun_serpent = False
         except TypeError:
             rerun_serpent = True
@@ -755,8 +755,7 @@ class saltproc:
                     self.exec_path,
                     '-omp', str(32), self.input_file)
         else:
-            args = (self.exec_path,
-                    '-omp', str(self.cores), self.input_file)
+            args = (self.exec_path, self.input_file)
         print('Running Serpent')
         try:
             output = subprocess.check_output(args)
